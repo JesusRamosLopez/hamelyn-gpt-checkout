@@ -1,0 +1,6 @@
+fastapi==0.115.2
+uvicorn==0.32.0
+pandas==2.2.3
+stripe==10.5.0
+python-multipart==0.0.9
+

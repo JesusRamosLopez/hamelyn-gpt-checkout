@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # -------------------------
 # CONFIGURACIÓN HAMELYN
 # -------------------------
-stripe.api_key = "REDACTED"
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 DOMAIN = "https://tienda.hamelyn.com"
 CSV_FILE = "uploadts-1760618195-sec_top_music.csv"
 # -------------------------

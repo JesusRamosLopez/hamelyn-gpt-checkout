@@ -68,44 +68,49 @@ async def listar_productos(limit: int = 10):
         raise HTTPException(status_code=500, detail=str(e))
 
 # -----------------------------------------------------
-# CREAR SESIÓN DE CHECKOUT
+# CREAR SESIÓN DE CHECKOUT (DINÁMICA)
 # -----------------------------------------------------
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(request: Request):
     try:
         data = await request.json()
-        product_id = data.get("id")
+        product_id = data.get("id") or data.get("product_id")
 
         if not product_id:
             raise HTTPException(status_code=400, detail="Falta el ID del producto.")
 
-        # Buscar producto
-        producto = df[df["id"] == int(product_id)] if product_id.isdigit() else df[df["id"] == product_id]
+        # Buscar producto en el CSV (id puede ser string o número)
+        producto = df[df["id"].astype(str) == str(product_id)]
 
         if producto.empty:
             raise HTTPException(status_code=404, detail="Producto no encontrado.")
 
         row = producto.iloc[0]
-        title = row["title"]
-        price_str = str(row["price"]).replace(" EUR", "").replace(",", ".")
-        price = int(float(price_str) * 100)  # convertir a céntimos
-        image_url = row["image link"]
-        link = row["link"]
+        title = str(row["title"])
+        link = str(row["link"])
+        image_url = str(row["image link"])
+        price_str = str(row["price"]).replace("EUR", "").replace("€", "").replace(",", ".").strip()
 
-        # Crear sesión de Stripe
+        # Validar precio
+        try:
+            price_value = int(float(price_str) * 100)  # céntimos
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Precio inválido: {price_str}")
+
+        # Crear sesión de Stripe SIN depender del catálogo
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
             line_items=[
                 {
                     "price_data": {
                         "currency": "eur",
+                        "unit_amount": price_value,
                         "product_data": {
                             "name": title,
                             "images": [image_url],
-                            "metadata": {"product_id": str(row["id"])},
+                            "metadata": {"product_id": str(product_id), "link": link},
                         },
-                        "unit_amount": price,
                     },
                     "quantity": 1,
                 }
@@ -113,13 +118,14 @@ async def create_checkout_session(request: Request):
             mode="payment",
             success_url="https://tienda.hamelyn.com/gracias?session_id={CHECKOUT_SESSION_ID}",
             cancel_url=link,
-            metadata={"product_id": str(row["id"]), "product_title": title},
+            metadata={"product_id": str(product_id), "product_title": title},
         )
 
+        print(f"✅ Sesión de checkout creada correctamente para {title} ({product_id})")
         return {"url": session.url}
 
     except Exception as e:
-        print("❌ Error creando sesión de checkout:", e)
+        print("❌ Error creando sesión de checkout:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 # -----------------------------------------------------
@@ -142,15 +148,14 @@ async def stripe_webhook(request: Request):
 
     if event_type == "checkout.session.completed":
         session = event["data"]["object"]
-        print(f"✅ Pago completado: {session.get('id')}")
-        # Aquí podrías registrar la venta en una base de datos o Google Sheets
+        print(f"✅ Pago completado: {session.get('id')} | Producto: {session.get('metadata', {}).get('product_title')}")
 
     elif event_type == "checkout.session.expired":
         session = event["data"]["object"]
         print(f"⚠️ Sesión expirada: {session.get('id')}")
 
     else:
-        print(f"Evento recibido: {event_type}")
+        print(f"ℹ️ Evento recibido: {event_type}")
 
     return {"status": "success"}
 

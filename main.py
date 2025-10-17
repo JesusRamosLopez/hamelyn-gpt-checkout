@@ -1,14 +1,9 @@
-import os
-import stripe
-import pandas as pd
-import numpy as np
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-
-# Cargar clave de Stripe desde variable de entorno
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 if not stripe.api_key:
     raise RuntimeError("⚠️ La variable STRIPE_SECRET_KEY no está configurada")
+
+print("🔍 Stripe key cargada:", stripe.api_key[:10] + "..." if stripe.api_key else "⚠️ No detectada")
+
 
 DOMAIN = "https://tienda.hamelyn.com"
 CSV_FILE = "uploadts-1760618195-sec_top_music.csv"

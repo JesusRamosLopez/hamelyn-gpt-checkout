@@ -1,98 +1,163 @@
-import os
-import stripe
-import pandas as pd
-import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import pandas as pd
+import stripe
+import os
+import numpy as np
 
-# 🔑 Cargar clave de Stripe desde variable de entorno
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-if not stripe.api_key:
-    raise RuntimeError("⚠️ La variable STRIPE_SECRET_KEY no está configurada")
-print("🔍 Stripe key cargada:", stripe.api_key[:10] + "..." if stripe.api_key else "⚠️ No detectada")
+# -----------------------------------------------------
+# CONFIGURACIÓN GENERAL
+# -----------------------------------------------------
 
-# 🌐 Dominio principal y archivo CSV
-DOMAIN = "https://tienda.hamelyn.com"
-CSV_FILE = "uploadts-1760618195-sec_top_music.csv"
+app = FastAPI(title="Hamelyn GPT Checkout API", version="1.0.0")
 
-# 🚀 Inicializar FastAPI
-app = FastAPI(title="Hamelyn Checkout API")
-
-# 🔓 CORS para permitir acceso desde cualquier origen (ChatGPT, frontends, etc.)
+# Permitir peticiones desde ChatGPT y tu dominio
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://chat.openai.com",  # ChatGPT
+        "https://tienda.hamelyn.com",  # tu tienda
+        "http://localhost:3000",  # entorno local
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 📦 Cargar catálogo de productos
+# -----------------------------------------------------
+# VARIABLES DE ENTORNO STRIPE
+# -----------------------------------------------------
+
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "sk_test_xxxxxxxxxxxxxxxxxxxxx")
+WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_xxxxxxxxxxxxxxxxxxxxx")
+
+# -----------------------------------------------------
+# CARGA DE PRODUCTOS CSV
+# -----------------------------------------------------
+
+CSV_FILE = "uploadts-1760618195-sec_top_music.csv"
+
 try:
     df = pd.read_csv(CSV_FILE)
+    df = df.replace({np.nan: None})
+    print(f"✅ {len(df)} productos cargados correctamente desde {CSV_FILE}")
 except Exception as e:
-    raise RuntimeError(f"Error al leer el CSV: {e}")
+    print(f"❌ Error al leer el CSV: {e}")
+    df = pd.DataFrame(columns=["id", "title", "price", "link", "image link"])
 
-# 🧹 Normalizar columnas
-df.columns = [c.strip().lower() for c in df.columns]
-df["price_value"] = df["price"].str.extract(r"([\d\.,]+)").astype(float)
-df["currency"] = df["price"].str.extract(r"([A-Z]{3})")
-productos = df.to_dict(orient="records")
+# -----------------------------------------------------
+# ENDPOINT PRINCIPAL
+# -----------------------------------------------------
 
-# 🏁 Endpoint raíz
 @app.get("/")
-def root():
-    return {"status": "Hamelyn Checkout API running", "total_products": len(productos)}
+async def root():
+    return {"message": "Hamelyn GPT Checkout API está viva 🚀"}
 
-# 🧾 Listar productos
+# -----------------------------------------------------
+# LISTAR PRODUCTOS
+# -----------------------------------------------------
+
 @app.get("/productos")
-def listar_productos(limit: int = 10):
-    """Devuelve los primeros productos del catálogo."""
-    return productos[:limit]
-
-# 💳 Crear sesión de Stripe Checkout
-@app.post("/checkout/{product_id}")
-def crear_checkout(product_id: str):
-    """Crea una sesión real de Stripe Checkout (modo test)."""
-    producto = next((p for p in productos if str(p.get("id")) == product_id), None)
-    if not producto:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
-
-    # 🧠 Validaciones y fallback
-    nombre = str(producto.get("title") or "Producto Hamelyn")
-    precio = float(producto.get("price_value") or 1.0)
-    moneda = (producto.get("currency") or "eur").lower()
-    imagen = producto.get("image link")
-
-    # Validar imagen
-    if not isinstance(imagen, str) or not imagen.startswith("http"):
-        imagen = "https://tienda.hamelyn.com/assets/img/default-product.jpg"
-
+async def listar_productos(limit: int = 10):
+    """Devuelve los productos del CSV (limitado por parámetro)."""
     try:
-        # 🧾 Crear sesión de checkout
+        productos = df.head(limit).to_dict(orient="records")
+        return JSONResponse(content=productos)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# -----------------------------------------------------
+# CREAR SESIÓN DE CHECKOUT
+# -----------------------------------------------------
+
+@app.post("/create-checkout-session")
+async def create_checkout_session(request: Request):
+    try:
+        data = await request.json()
+        product_id = data.get("id")
+
+        if not product_id:
+            raise HTTPException(status_code=400, detail="Falta el ID del producto.")
+
+        # Buscar producto
+        producto = df[df["id"] == int(product_id)] if product_id.isdigit() else df[df["id"] == product_id]
+
+        if producto.empty:
+            raise HTTPException(status_code=404, detail="Producto no encontrado.")
+
+        row = producto.iloc[0]
+        title = row["title"]
+        price_str = str(row["price"]).replace(" EUR", "").replace(",", ".")
+        price = int(float(price_str) * 100)  # convertir a céntimos
+        image_url = row["image link"]
+        link = row["link"]
+
+        # Crear sesión de Stripe
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
             line_items=[
                 {
                     "price_data": {
-                        "currency": moneda,
+                        "currency": "eur",
                         "product_data": {
-                            "name": nombre,
-                            "images": [imagen],
+                            "name": title,
+                            "images": [image_url],
+                            "metadata": {"product_id": str(row["id"])},
                         },
-                        "unit_amount": int(precio * 100),
+                        "unit_amount": price,
                     },
                     "quantity": 1,
                 }
             ],
             mode="payment",
-            success_url=f"{DOMAIN}/gracias?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{DOMAIN}/cancelado",
+            success_url="https://tienda.hamelyn.com/gracias?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=link,
+            metadata={"product_id": str(row["id"]), "product_title": title},
         )
 
-        print(f"✅ Sesión creada correctamente para {nombre} → {session.url}")
-        return {"checkout_url": session.url}
+        return {"url": session.url}
 
     except Exception as e:
-        print(f"❌ Error creando checkout para {product_id}: {e}")
+        print("❌ Error creando sesión de checkout:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+# -----------------------------------------------------
+# WEBHOOK STRIPE
+# -----------------------------------------------------
+
+@app.post("/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Firma del webhook inválida")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    event_type = event["type"]
+
+    if event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        print(f"✅ Pago completado: {session.get('id')}")
+        # Aquí podrías registrar la venta en una base de datos o Google Sheets
+
+    elif event_type == "checkout.session.expired":
+        session = event["data"]["object"]
+        print(f"⚠️ Sesión expirada: {session.get('id')}")
+
+    else:
+        print(f"Evento recibido: {event_type}")
+
+    return {"status": "success"}
+
+# -----------------------------------------------------
+# EJECUCIÓN LOCAL
+# -----------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))

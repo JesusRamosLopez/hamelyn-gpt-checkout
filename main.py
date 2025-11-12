@@ -54,6 +54,12 @@ except Exception as e:
 async def root():
     return {"message": "Hamelyn GPT Checkout API está viva 🚀"}
 
+@app.head("/")
+async def root_head():
+    """Responde al método HEAD para los monitores (200 OK)."""
+    return JSONResponse(status_code=200, content=None)
+
+
 # -----------------------------------------------------
 # LISTAR PRODUCTOS
 # -----------------------------------------------------
